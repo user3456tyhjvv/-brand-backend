@@ -20,7 +20,9 @@ admin.initializeApp({
 const db = admin.firestore();
 
 app.use(cors({
-  origin: "http://localhost:5173" // Your Vite frontend URL
+  origin: "https://brandifyblog.web.app", 
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
 }));
 
 // === EXISTING ROUTE: /index (Developer registration + custom token) ===
