@@ -31,7 +31,7 @@ admin.initializeApp({
 const db = admin.firestore();
 const allowedOrigins = [
   "https://brandifyblog.web.app",
-  "http://localhost:3000"
+   "https://brand-backend-y2fk.onrender.com"
 ];
 
 app.use(cors({
@@ -444,5 +444,6 @@ app.use((req, res) => {
 });
 
 // Start Server
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`🚀 API running on http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 API running on port ${PORT}`);
+});
