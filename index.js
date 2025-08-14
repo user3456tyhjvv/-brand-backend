@@ -7,9 +7,35 @@ const crypto = require("crypto");
 const paypal = require('@paypal/checkout-server-sdk'); // Add PayPal SDK
 const app = express();
 
-app.use(cors());
-app.use(express.json());
 
+app.use(express.json());
+const allowedOrigins = [
+  'https://brandifyblog.web.app',
+  'https://brand-backend-y2fk.onrender.com',
+  'http://localhost:3000' // for development
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true, // This is important for cookies/sessions
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
 console.log("Loaded environment variables:", {
   FIREBASE_PROJECT_ID: !!process.env.FIREBASE_PROJECT_ID,
   FIREBASE_CLIENT_EMAIL: !!process.env.FIREBASE_CLIENT_EMAIL,
@@ -29,31 +55,8 @@ admin.initializeApp({
 });
 
 const db = admin.firestore();
-// Configure CORS
-const allowedOrigins = [
-  'https://brandifyblog.web.app',
-  'https://brand-backend-y2fk.onrender.com',
-  'http://localhost:3000' // for local development
-];
 
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-};
 
-// Apply CORS middleware
-app.use(cors(corsOptions));
-
-// Handle preflight requests
-app.options('*', cors(corsOptions));
 // ===========================
 // PayPal Configuration
 // ===========================
@@ -260,6 +263,7 @@ app.post('/api/create-pesapal-order', async (req, res) => {
     });
   }
 });
+
 app.get('/api/pesapal-payment-status', async (req, res) => {
   try {
     const { orderId } = req.query;
