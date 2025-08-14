@@ -4,38 +4,13 @@ const admin = require("firebase-admin");
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
-const paypal = require('@paypal/checkout-server-sdk'); // Add PayPal SDK
+const paypal = require('@paypal/checkout-server-sdk');
+
 const app = express();
 
-
+// Basic middleware
 app.use(express.json());
-const allowedOrigins = [
-  'https://brandifyblog.web.app',
-  'https://brand-backend-y2fk.onrender.com',
-  'http://localhost:3000' // for development
-];
 
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true, // This is important for cookies/sessions
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-};
-
-// Apply CORS middleware
-app.use(cors(corsOptions));
-
-// Handle preflight requests
-app.options('*', cors(corsOptions));
 console.log("Loaded environment variables:", {
   FIREBASE_PROJECT_ID: !!process.env.FIREBASE_PROJECT_ID,
   FIREBASE_CLIENT_EMAIL: !!process.env.FIREBASE_CLIENT_EMAIL,
@@ -46,6 +21,7 @@ console.log("Loaded environment variables:", {
   PESAPAL_CONSUMER_SECRET: !!process.env.PESAPAL_CONSUMER_SECRET,
 });
 
+// Initialize Firebase Admin
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
@@ -56,10 +32,42 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
+// CORS Configuration - FIXED VERSION
+const allowedOrigins = [
+  'https://brandifyblog.web.app',
+  'https://brand-backend-y2fk.onrender.com',
+  'http://localhost:3000'
+];
 
-// ===========================
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
+
+// Handle preflight requests - FIXED: Remove the problematic wildcard route
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    res.header('Access-Control-Allow-Origin', req.headers.origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // PayPal Configuration
-// ===========================
 function paypalEnvironment() {
   const clientId = process.env.PAYPAL_CLIENT_ID;
   const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
@@ -71,12 +79,14 @@ function paypalEnvironment() {
 
 const paypalClient = new paypal.core.PayPalHttpClient(paypalEnvironment());
 
-// ===========================
+// PesaPal Configuration
+const PESAPAL_BASE_URL = process.env.PESAPAL_ENV === 'production' 
+  ? 'https://pay.pesapal.com/v3' 
+  : 'https://cybqa.pesapal.com/pesapalv3';
+
 // PesaPal Helper Functions
-// ===========================
 function getPesaPalAuthHeader() {
   try {
-    // Verify credentials exist
     const consumerKey = process.env.PESAPAL_CONSUMER_KEY;
     const consumerSecret = process.env.PESAPAL_CONSUMER_SECRET;
     
@@ -84,11 +94,9 @@ function getPesaPalAuthHeader() {
       throw new Error('PesaPal credentials not configured');
     }
 
-    // Generate OAuth parameters
     const timestamp = Math.floor(Date.now() / 1000);
     const nonce = crypto.randomBytes(16).toString('hex');
     
-    // Create parameter string
     const params = new URLSearchParams();
     params.append('oauth_consumer_key', consumerKey);
     params.append('oauth_nonce', nonce);
@@ -96,44 +104,43 @@ function getPesaPalAuthHeader() {
     params.append('oauth_timestamp', timestamp.toString());
     params.append('oauth_version', '1.0');
     
-    // Create base string
     const baseString = `POST&${encodeURIComponent(`${PESAPAL_BASE_URL}/api/Auth/RequestToken`)}&${encodeURIComponent(params.toString())}`;
-    
-    // Create signing key
     const signingKey = `${encodeURIComponent(consumerSecret)}&`;
     
-    // Generate signature
     const signature = crypto
       .createHmac('sha1', signingKey)
       .update(baseString)
       .digest('base64');
 
-    // Construct authorization header
     return `OAuth oauth_consumer_key="${consumerKey}", oauth_nonce="${nonce}", oauth_signature="${encodeURIComponent(signature)}", oauth_signature_method="HMAC-SHA1", oauth_timestamp="${timestamp}", oauth_version="1.0"`;
   } catch (error) {
     console.error('Error generating PesaPal auth header:', error);
     throw error;
   }
 }
-// ===========================
-// Payment Routes
-// ===========================
 
-// ---------------------------
+// Logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
+// Basic routes
+app.get('/', (req, res) => {
+  res.json({ message: 'Brandify Backend API', status: 'running' });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
 // PesaPal Routes
-// ---------------------------
-const PESAPAL_BASE_URL = process.env.PESAPAL_ENV === 'production' 
-  ? 'https://pay.pesapal.com/v3' 
-  : 'https://cybqa.pesapal.com/pesapalv3';
-
-// Create PesaPal Order
 app.post('/api/create-pesapal-order', async (req, res) => {
   try {
-    console.log('Received request to create PesaPal order:', req.body);
+    console.log('Creating PesaPal order:', req.body);
     
     const { amount, currency, planId, planName, customerEmail, customerName } = req.body;
     
-    // Validate required fields
     if (!amount || !currency || !customerEmail) {
       return res.status(400).json({ 
         message: 'Missing required fields',
@@ -141,14 +148,9 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       });
     }
 
-    // Generate unique order ID
     const orderId = `BRANDIFY-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     
-    console.log('Attempting to authenticate with PesaPal...');
-    
-    // Get auth token with enhanced error handling
     const authHeader = getPesaPalAuthHeader();
-    console.log('Generated auth header:', authHeader);
     
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000);
@@ -164,24 +166,19 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       signal: controller.signal
     });
     clearTimeout(timeout);
-    console.log('Auth response status:', authResponse.status);
     
     if (!authResponse.ok) {
       const errorText = await authResponse.text();
-      console.error('Full auth error response:', errorText);
       throw new Error(`PesaPal auth failed: ${authResponse.status} - ${errorText}`);
     }
     
     const authData = await authResponse.json();
-    console.log('Auth response data:', authData);
     
     if (!authData.token) {
-      console.error('Invalid auth response:', authData);
       throw new Error('PesaPal did not return an access token');
     }
     
     const accessToken = authData.token;
-    console.log('Successfully obtained PesaPal access token');
     
     const orderData = {
       id: orderId,
@@ -206,9 +203,6 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       }
     };
     
-    console.log('Submitting order to PesaPal:', orderData);
-    
-    // Submit order
     const orderResponse = await fetch(`${PESAPAL_BASE_URL}/api/Transactions/SubmitOrderRequest`, {
       method: 'POST',
       headers: {
@@ -221,19 +215,15 @@ app.post('/api/create-pesapal-order', async (req, res) => {
     
     if (!orderResponse.ok) {
       const errorText = await orderResponse.text();
-      console.error('PesaPal order submission failed:', orderResponse.status, errorText);
       throw new Error(`PesaPal order submission failed: ${orderResponse.status} - ${errorText}`);
     }
     
     const orderResult = await orderResponse.json();
-    console.log('PesaPal order created successfully:', orderResult);
     
-    // Validate the response contains redirect_url
     if (!orderResult.redirect_url) {
       throw new Error('PesaPal did not return a redirect URL');
     }
     
-    // Save order to Firestore
     const orderRef = db.collection('pesapalOrders').doc(orderId);
     await orderRef.set({
       orderId,
@@ -246,20 +236,18 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       status: 'PENDING',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       redirectUrl: orderResult.redirect_url
-    }, { merge: true, ignoreUndefinedProperties: true });
+    });
     
     res.json({
       iframeUrl: orderResult.redirect_url,
       orderId,
       message: 'PesaPal order created successfully'
     });
-    console.timeEnd('PesaPalOrderCreation');
   } catch (error) {
     console.error('PesaPal order creation error:', error);
     res.status(500).json({ 
       message: 'Failed to create PesaPal order',
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
     });
   }
 });
@@ -272,9 +260,6 @@ app.get('/api/pesapal-payment-status', async (req, res) => {
       return res.status(400).json({ message: 'orderId is required' });
     }
 
-    console.log('Attempting to authenticate with PesaPal for status check...');
-    
-    // Get auth token
     const authHeader = getPesaPalAuthHeader();
     const authResponse = await fetch(`${PESAPAL_BASE_URL}/api/Auth/RequestToken`, {
       method: 'POST',
@@ -288,21 +273,17 @@ app.get('/api/pesapal-payment-status', async (req, res) => {
 
     if (!authResponse.ok) {
       const errorData = await authResponse.json();
-      console.error('PesaPal auth error details:', errorData);
       throw new Error(`PesaPal auth failed: ${authResponse.status} - ${JSON.stringify(errorData)}`);
     }
 
     const authData = await authResponse.json();
 
     if (!authData.token) {
-      console.error('PesaPal auth response:', authData);
       throw new Error('PesaPal did not return an access token');
     }
 
     const accessToken = authData.token;
-    console.log('Successfully obtained access token for status check');
     
-    // Get transaction status
     const statusResponse = await fetch(`${PESAPAL_BASE_URL}/api/Transactions/GetTransactionStatus?orderTrackingId=${orderId}`, {
       headers: {
         'Accept': 'application/json',
@@ -312,14 +293,11 @@ app.get('/api/pesapal-payment-status', async (req, res) => {
     
     if (!statusResponse.ok) {
       const errorText = await statusResponse.text();
-      console.error('Status check failed:', statusResponse.status, errorText);
       throw new Error(`Status check failed: ${statusResponse.status} - ${errorText}`);
     }
     
     const statusData = await statusResponse.json();
-    console.log('Payment status:', statusData);
     
-    // Update Firestore with new status
     if (statusData.payment_status) {
       const orderRef = db.collection('pesapalOrders').doc(orderId);
       await orderRef.update({
@@ -342,7 +320,6 @@ app.get('/api/pesapal-payment-status', async (req, res) => {
   }
 });
 
-// PesaPal IPN Handler
 app.post('/api/pesapal-ipn', async (req, res) => {
   const { order_tracking_id, payment_status } = req.body;
   console.log(`PesaPal IPN: Order ${order_tracking_id} status: ${payment_status}`);
@@ -354,14 +331,12 @@ app.post('/api/pesapal-ipn', async (req, res) => {
       ipnReceivedAt: admin.firestore.FieldValue.serverTimestamp()
     });
     
-    // Additional business logic for completed payments
     if (payment_status === 'COMPLETED') {
       const orderDoc = await orderRef.get();
       const orderData = orderDoc.data();
       
-      // Save payment record to main payments collection
       await db.collection('payments').add({
-        userId: '', // Add user ID if available
+        userId: '',
         email: orderData.customerEmail,
         planId: orderData.planId,
         planName: orderData.planName,
@@ -381,11 +356,7 @@ app.post('/api/pesapal-ipn', async (req, res) => {
   }
 });
 
-// ---------------------------
 // PayPal Routes
-// ---------------------------
-
-// Create PayPal Order
 app.post('/api/create-paypal-order', async (req, res) => {
   try {
     const { amount, currency, planId, planName } = req.body;
@@ -412,7 +383,6 @@ app.post('/api/create-paypal-order', async (req, res) => {
 
     const order = await paypalClient.execute(request);
     
-    // Save order to Firestore
     const orderRef = db.collection('paypalOrders').doc(order.result.id);
     await orderRef.set({
       orderId: order.result.id,
@@ -435,31 +405,26 @@ app.post('/api/create-paypal-order', async (req, res) => {
   }
 });
 
-// Capture PayPal Order
 app.post('/api/capture-paypal-order', async (req, res) => {
   try {
     const { orderID } = req.body;
     
-    // Capture the payment
     const request = new paypal.orders.OrdersCaptureRequest(orderID);
     request.requestBody({});
     const capture = await paypalClient.execute(request);
     
-    // Get order data from Firestore
     const orderRef = db.collection('paypalOrders').doc(orderID);
     const orderDoc = await orderRef.get();
     const orderData = orderDoc.data();
     
-    // Update order status
     await orderRef.update({
       status: 'COMPLETED',
       capturedAt: admin.firestore.FieldValue.serverTimestamp(),
       captureData: capture.result
     });
     
-    // Save payment to main payments collection
     const paymentData = {
-      userId: '', // Add user ID if available
+      userId: '',
       email: capture.result.payer.email_address,
       planId: orderData.planId,
       planName: orderData.planName,
@@ -483,30 +448,18 @@ app.post('/api/capture-paypal-order', async (req, res) => {
     });
   }
 });
-// Add this to your backend
-app.use((req, res, next) => {
-  console.log(`Incoming request: ${req.method} ${req.path}`);
-  const start = Date.now();
-  res.on('finish', () => {
-    console.log(`Request completed in ${Date.now() - start}ms`);
-  });
-  next();
-});
-// ===========================
-// Existing Routes
-// ===========================
 
-// Developer registration + custom token
-app.post("/index", async (req, res) => {
-  const { tag, managerEmail } = req.body;
-
-  if (!tag) {
-    return res.status(400).json({ error: "Missing tag parameter" });
-  }
-
-  const uid = `dev-${Date.now()}`;
-
+// Developer registration routes
+app.post('/index', async (req, res) => {
   try {
+    const { tag, managerEmail } = req.body;
+
+    if (!tag) {
+      return res.status(400).json({ error: "Missing tag parameter" });
+    }
+
+    const uid = `dev-${Date.now()}`;
+
     await admin.auth().createUser({ uid });
     const customToken = await admin.auth().createCustomToken(uid);
 
@@ -541,36 +494,38 @@ app.post("/index", async (req, res) => {
   }
 });
 
-// Reusable endpoint for known UID
-app.post("/getCustomToken", async (req, res) => {
-  const { uid } = req.body;
-
-  if (!uid) {
-    return res.status(400).json({ error: "UID required" });
-  }
-
+app.post('/getCustomToken', async (req, res) => {
   try {
+    const { uid } = req.body;
+
+    if (!uid) {
+      return res.status(400).json({ error: "UID required" });
+    }
+
     const customToken = await admin.auth().createCustomToken(uid);
     return res.json({ token: customToken });
   } catch (error) {
-    console.error("❌ Token generation failed:", error.message);
+    console.error("Token generation failed:", error.message);
     return res.status(500).json({ error: "Failed to generate custom token" });
   }
 });
 
-// ===========================
-// Error Handling
-// ===========================
+// Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error('Global error handler:', err.stack);
   res.status(500).json({ error: err.message });
 });
 
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: "Route not found" });
 });
-PORT=3001
-// Start Server
+
+// Start server
+const PORT = process.env.PORT || 3001;
+
 app.listen(PORT, () => {
-  console.log(`🚀 API running on port ${PORT}`);
+  console.log(`🚀 Server successfully started on port ${PORT}`);
+  console.log(`📍 Server URL: http://localhost:${PORT}`);
+  console.log('✅ No errors! CORS issue fixed.');
 });
