@@ -65,45 +65,45 @@ const paypalClient = new paypal.core.PayPalHttpClient(paypalEnvironment());
 // PesaPal Helper Functions
 // ===========================
 function getPesaPalAuthHeader() {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const nonce = crypto.randomBytes(16).toString('hex');
-  
-  // Ensure these values are properly set
-  const consumerKey = process.env.PESAPAL_CONSUMER_KEY;
-  const consumerSecret = process.env.PESAPAL_CONSUMER_SECRET;
-  
-  if (!consumerKey || !consumerSecret) {
-    throw new Error('PesaPal credentials not configured');
+  try {
+    // Verify credentials exist
+    const consumerKey = process.env.PESAPAL_CONSUMER_KEY;
+    const consumerSecret = process.env.PESAPAL_CONSUMER_SECRET;
+    
+    if (!consumerKey || !consumerSecret) {
+      throw new Error('PesaPal credentials not configured');
+    }
+
+    // Generate OAuth parameters
+    const timestamp = Math.floor(Date.now() / 1000);
+    const nonce = crypto.randomBytes(16).toString('hex');
+    
+    // Create parameter string
+    const params = new URLSearchParams();
+    params.append('oauth_consumer_key', consumerKey);
+    params.append('oauth_nonce', nonce);
+    params.append('oauth_signature_method', 'HMAC-SHA1');
+    params.append('oauth_timestamp', timestamp.toString());
+    params.append('oauth_version', '1.0');
+    
+    // Create base string
+    const baseString = `POST&${encodeURIComponent(`${PESAPAL_BASE_URL}/api/Auth/RequestToken`)}&${encodeURIComponent(params.toString())}`;
+    
+    // Create signing key
+    const signingKey = `${encodeURIComponent(consumerSecret)}&`;
+    
+    // Generate signature
+    const signature = crypto
+      .createHmac('sha1', signingKey)
+      .update(baseString)
+      .digest('base64');
+
+    // Construct authorization header
+    return `OAuth oauth_consumer_key="${consumerKey}", oauth_nonce="${nonce}", oauth_signature="${encodeURIComponent(signature)}", oauth_signature_method="HMAC-SHA1", oauth_timestamp="${timestamp}", oauth_version="1.0"`;
+  } catch (error) {
+    console.error('Error generating PesaPal auth header:', error);
+    throw error;
   }
-
-  // Create the base string for signature
-  const baseParams = {
-    oauth_consumer_key: consumerKey,
-    oauth_nonce: nonce,
-    oauth_signature_method: 'HMAC-SHA1',
-    oauth_timestamp: timestamp,
-    oauth_version: '1.0'
-  };
-
-  // Sort and encode parameters
-  const encodedParams = Object.entries(baseParams)
-    .sort()
-    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
-    .join('&');
-
-  const baseString = `POST&${encodeURIComponent(`${PESAPAL_BASE_URL}/api/Auth/RequestToken`)}&${encodeURIComponent(encodedParams)}`;
-  
-  // Create the signing key
-  const signingKey = `${encodeURIComponent(consumerSecret)}&`;
-  
-  // Generate the signature
-  const signature = crypto
-    .createHmac('sha1', signingKey)
-    .update(baseString)
-    .digest('base64');
-
-  // Construct the OAuth header
-  return `OAuth oauth_consumer_key="${consumerKey}", oauth_nonce="${nonce}", oauth_signature="${encodeURIComponent(signature)}", oauth_signature_method="HMAC-SHA1", oauth_timestamp="${timestamp}", oauth_version="1.0"`;
 }
 // ===========================
 // Payment Routes
@@ -136,23 +136,37 @@ app.post('/api/create-pesapal-order', async (req, res) => {
     
     console.log('Attempting to authenticate with PesaPal...');
     
-    // Get auth token
+    // Get auth token with enhanced error handling
+    const authHeader = getPesaPalAuthHeader();
+    console.log('Generated auth header:', authHeader);
+    
     const authResponse = await fetch(`${PESAPAL_BASE_URL}/api/Auth/RequestToken`, {
       method: 'POST',
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'Authorization': getPesaPalAuthHeader()
-      }
+        'Authorization': authHeader,
+        'Cache-Control': 'no-cache'
+      },
+      timeout: 10000 // 10 second timeout
     });
+    
+    console.log('Auth response status:', authResponse.status);
     
     if (!authResponse.ok) {
       const errorText = await authResponse.text();
-      console.error('PesaPal auth failed:', authResponse.status, errorText);
+      console.error('Full auth error response:', errorText);
       throw new Error(`PesaPal auth failed: ${authResponse.status} - ${errorText}`);
     }
     
     const authData = await authResponse.json();
+    console.log('Auth response data:', authData);
+    
+    if (!authData.token) {
+      console.error('Invalid auth response:', authData);
+      throw new Error('PesaPal did not return an access token');
+    }
+    
     const accessToken = authData.token;
     console.log('Successfully obtained PesaPal access token');
     
@@ -161,8 +175,8 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       currency,
       amount,
       description: `${planName || 'Plan'} Subscription`,
-      callback_url: "https://brandifyblog.web.app/pesapal-callback", 
-      notification_id: "https://brand-backend-y2fk.onrender.com/api/pesapal-ipn", 
+      callback_url: process.env.PESAPAL_CALLBACK_URL || "https://brandifyblog.web.app/pesapal-callback",
+      notification_id: process.env.PESAPAL_IPN_URL || "https://brand-backend-y2fk.onrender.com/api/pesapal-ipn",
       billing_address: {
         email_address: customerEmail,
         phone_number: "",
@@ -236,37 +250,43 @@ app.post('/api/create-pesapal-order', async (req, res) => {
     });
   }
 });
-// Check PesaPal Payment Status
 app.get('/api/pesapal-payment-status', async (req, res) => {
   try {
     const { orderId } = req.query;
     
+    if (!orderId) {
+      return res.status(400).json({ message: 'orderId is required' });
+    }
+
+    console.log('Attempting to authenticate with PesaPal for status check...');
+    
     // Get auth token
-    // Get auth token
-const authResponse = await fetch(`${PESAPAL_BASE_URL}/api/Auth/RequestToken`, {
-  method: 'POST',
-  headers: {
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-    'Authorization': getPesaPalAuthHeader(),
-    'Cache-Control': 'no-cache'
-  }
-});
+    const authHeader = getPesaPalAuthHeader();
+    const authResponse = await fetch(`${PESAPAL_BASE_URL}/api/Auth/RequestToken`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': authHeader,
+        'Cache-Control': 'no-cache'
+      }
+    });
 
-if (!authResponse.ok) {
-  const errorData = await authResponse.json();
-  console.error('PesaPal auth error details:', errorData);
-  throw new Error(`PesaPal auth failed: ${authResponse.status} - ${JSON.stringify(errorData)}`);
-}
+    if (!authResponse.ok) {
+      const errorData = await authResponse.json();
+      console.error('PesaPal auth error details:', errorData);
+      throw new Error(`PesaPal auth failed: ${authResponse.status} - ${JSON.stringify(errorData)}`);
+    }
 
-const authData = await authResponse.json();
+    const authData = await authResponse.json();
 
-if (!authData.token) {
-  console.error('PesaPal auth response:', authData);
-  throw new Error('PesaPal did not return an access token');
-}
+    if (!authData.token) {
+      console.error('PesaPal auth response:', authData);
+      throw new Error('PesaPal did not return an access token');
+    }
 
-const accessToken = authData.token;
+    const accessToken = authData.token;
+    console.log('Successfully obtained access token for status check');
     
     // Get transaction status
     const statusResponse = await fetch(`${PESAPAL_BASE_URL}/api/Transactions/GetTransactionStatus?orderTrackingId=${orderId}`, {
@@ -276,7 +296,14 @@ const accessToken = authData.token;
       }
     });
     
+    if (!statusResponse.ok) {
+      const errorText = await statusResponse.text();
+      console.error('Status check failed:', statusResponse.status, errorText);
+      throw new Error(`Status check failed: ${statusResponse.status} - ${errorText}`);
+    }
+    
     const statusData = await statusResponse.json();
+    console.log('Payment status:', statusData);
     
     // Update Firestore with new status
     if (statusData.payment_status) {
@@ -287,7 +314,10 @@ const accessToken = authData.token;
       });
     }
     
-    res.json({ status: statusData.payment_status });
+    res.json({ 
+      status: statusData.payment_status,
+      details: statusData
+    });
     
   } catch (error) {
     console.error('PesaPal status check error:', error);
