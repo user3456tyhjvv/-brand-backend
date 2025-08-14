@@ -29,24 +29,31 @@ admin.initializeApp({
 });
 
 const db = admin.firestore();
+// Configure CORS
 const allowedOrigins = [
-  "https://brandifyblog.web.app",
-   "https://brand-backend-y2fk.onrender.com",
-   "http://localhost:3000"
+  'https://brandifyblog.web.app',
+  'https://brand-backend-y2fk.onrender.com',
+  'http://localhost:3000' // for local development
 ];
 
-app.use(cors({
-  origin: (origin, callback) => {
+const corsOptions = {
+  origin: function (origin, callback) {
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error("Not allowed by CORS"));
+      callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
-}));
+};
 
+// Apply CORS middleware
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
 // ===========================
 // PayPal Configuration
 // ===========================
@@ -140,6 +147,9 @@ app.post('/api/create-pesapal-order', async (req, res) => {
     const authHeader = getPesaPalAuthHeader();
     console.log('Generated auth header:', authHeader);
     
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000);
+
     const authResponse = await fetch(`${PESAPAL_BASE_URL}/api/Auth/RequestToken`, {
       method: 'POST',
       headers: {
@@ -148,9 +158,9 @@ app.post('/api/create-pesapal-order', async (req, res) => {
         'Authorization': authHeader,
         'Cache-Control': 'no-cache'
       },
-      timeout: 10000 // 10 second timeout
+      signal: controller.signal
     });
-    
+    clearTimeout(timeout);
     console.log('Auth response status:', authResponse.status);
     
     if (!authResponse.ok) {
@@ -240,7 +250,7 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       orderId,
       message: 'PesaPal order created successfully'
     });
-    
+    console.timeEnd('PesaPalOrderCreation');
   } catch (error) {
     console.error('PesaPal order creation error:', error);
     res.status(500).json({ 
@@ -469,7 +479,15 @@ app.post('/api/capture-paypal-order', async (req, res) => {
     });
   }
 });
-
+// Add this to your backend
+app.use((req, res, next) => {
+  console.log(`Incoming request: ${req.method} ${req.path}`);
+  const start = Date.now();
+  res.on('finish', () => {
+    console.log(`Request completed in ${Date.now() - start}ms`);
+  });
+  next();
+});
 // ===========================
 // Existing Routes
 // ===========================
