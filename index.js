@@ -31,7 +31,8 @@ admin.initializeApp({
 const db = admin.firestore();
 const allowedOrigins = [
   "https://brandifyblog.web.app",
-   "https://brand-backend-y2fk.onrender.com"
+   "https://brand-backend-y2fk.onrender.com",
+   "http://localhost:3000"
 ];
 
 app.use(cors({
@@ -92,33 +93,22 @@ const PESAPAL_BASE_URL = process.env.PESAPAL_ENV === 'production'
 // Create PesaPal Order
 app.post('/api/create-pesapal-order', async (req, res) => {
   try {
+    console.log('Received request to create PesaPal order:', req.body);
+    
     const { amount, currency, planId, planName, customerEmail, customerName } = req.body;
     
+    // Validate required fields
+    if (!amount || !currency || !customerEmail) {
+      return res.status(400).json({ 
+        message: 'Missing required fields',
+        required: ['amount', 'currency', 'customerEmail']
+      });
+    }
+
     // Generate unique order ID
     const orderId = `BRANDIFY-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     
-    const orderData = {
-      id: orderId,
-      currency,
-      amount,
-      description: `${planName} Plan Subscription`,
-      callback_url: "https://brandifyblog.web.app/pesapal-callback", 
-      notification_id: "https://brandifyblog.web.app/api/pesapal-ipn", 
-      billing_address: {
-        email_address: customerEmail,
-        phone_number: "",
-        country_code: "",
-        first_name: customerName.split(' ')[0] || "Customer",
-        middle_name: "",
-        last_name: customerName.split(' ')[1] || "",
-        line_1: "",
-        line_2: "",
-        city: "",
-        state: "",
-        postal_code: "",
-        zip_code: ""
-      }
-    };
+    console.log('Attempting to authenticate with PesaPal...');
     
     // Get auth token
     const authResponse = await fetch(`${PESAPAL_BASE_URL}/api/Auth/RequestToken`, {
@@ -130,8 +120,40 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       }
     });
     
+    if (!authResponse.ok) {
+      const errorText = await authResponse.text();
+      console.error('PesaPal auth failed:', authResponse.status, errorText);
+      throw new Error(`PesaPal auth failed: ${authResponse.status} - ${errorText}`);
+    }
+    
     const authData = await authResponse.json();
     const accessToken = authData.token;
+    console.log('Successfully obtained PesaPal access token');
+    
+    const orderData = {
+      id: orderId,
+      currency,
+      amount,
+      description: `${planName || 'Plan'} Subscription`,
+      callback_url: "https://brandifyblog.web.app/pesapal-callback", 
+      notification_id: "https://brand-backend-y2fk.onrender.com/api/pesapal-ipn", 
+      billing_address: {
+        email_address: customerEmail,
+        phone_number: "",
+        country_code: "",
+        first_name: customerName?.split(' ')[0] || "Customer",
+        middle_name: "",
+        last_name: customerName?.split(' ')[1] || "",
+        line_1: "",
+        line_2: "",
+        city: "",
+        state: "",
+        postal_code: "",
+        zip_code: ""
+      }
+    };
+    
+    console.log('Submitting order to PesaPal:', orderData);
     
     // Submit order
     const orderResponse = await fetch(`${PESAPAL_BASE_URL}/api/Transactions/SubmitOrderRequest`, {
@@ -144,7 +166,19 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       body: JSON.stringify(orderData)
     });
     
+    if (!orderResponse.ok) {
+      const errorText = await orderResponse.text();
+      console.error('PesaPal order submission failed:', orderResponse.status, errorText);
+      throw new Error(`PesaPal order submission failed: ${orderResponse.status} - ${errorText}`);
+    }
+    
     const orderResult = await orderResponse.json();
+    console.log('PesaPal order created successfully:', orderResult);
+    
+    // Validate the response contains redirect_url
+    if (!orderResult.redirect_url) {
+      throw new Error('PesaPal did not return a redirect URL');
+    }
     
     // Save order to Firestore
     const orderRef = db.collection('pesapalOrders').doc(orderId);
@@ -152,29 +186,30 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       orderId,
       amount,
       currency,
-      planId,
-      planName,
+      planId: planId || null,
+      planName: planName || null,
       customerEmail,
-      customerName,
+      customerName: customerName || null,
       status: 'PENDING',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       redirectUrl: orderResult.redirect_url
-    });
+    }, { merge: true, ignoreUndefinedProperties: true });
     
     res.json({
       iframeUrl: orderResult.redirect_url,
-      orderId
+      orderId,
+      message: 'PesaPal order created successfully'
     });
     
   } catch (error) {
     console.error('PesaPal order creation error:', error);
     res.status(500).json({ 
-      message: 'Failed to create PesaPal order', 
-      error: error.message 
+      message: 'Failed to create PesaPal order',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
-
 // Check PesaPal Payment Status
 app.get('/api/pesapal-payment-status', async (req, res) => {
   try {
@@ -442,7 +477,7 @@ app.use((err, req, res, next) => {
 app.use((req, res) => {
   res.status(404).json({ error: "Route not found" });
 });
-
+PORT=3001
 // Start Server
 app.listen(PORT, () => {
   console.log(`🚀 API running on port ${PORT}`);
