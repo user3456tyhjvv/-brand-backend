@@ -32,36 +32,62 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-// CORS Configuration - FIXED VERSION
+// ENHANCED CORS Configuration
 const allowedOrigins = [
   'https://brandifyblog.web.app',
   'https://brand-backend-y2fk.onrender.com',
-  'http://localhost:3000'
+  'http://localhost:3000',
+  'http://localhost:3001'
 ];
 
+// More permissive CORS for debugging
 const corsOptions = {
   origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    console.log('Request origin:', origin);
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      console.log('Origin allowed:', origin);
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      console.log('Origin blocked:', origin);
+      // For debugging, let's allow all origins temporarily
+      // Remove this in production!
+      callback(null, true); // TEMPORARY: Allow all origins
+      // callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers'
+  ],
+  credentials: true,
+  optionsSuccessStatus: 200 // Some legacy browsers choke on 204
 };
 
-// Apply CORS middleware
+// Apply CORS middleware first
 app.use(cors(corsOptions));
 
-// Handle preflight requests - FIXED: Remove the problematic wildcard route
+// Additional CORS headers middleware
 app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin) || !origin) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+  }
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+  
   if (req.method === 'OPTIONS') {
-    res.header('Access-Control-Allow-Origin', req.headers.origin);
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.header('Access-Control-Allow-Credentials', 'true');
+    console.log('Handling OPTIONS preflight request');
     return res.sendStatus(200);
   }
   next();
@@ -119,25 +145,35 @@ function getPesaPalAuthHeader() {
   }
 }
 
-// Logging middleware
+// Enhanced logging middleware
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - Origin: ${req.headers.origin || 'none'}`);
   next();
 });
 
 // Basic routes
 app.get('/', (req, res) => {
-  res.json({ message: 'Brandify Backend API', status: 'running' });
+  res.json({ message: 'Brandify Backend API', status: 'running', timestamp: new Date().toISOString() });
 });
 
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// CORS test endpoint
+app.get('/api/cors-test', (req, res) => {
+  res.json({ 
+    message: 'CORS is working!', 
+    origin: req.headers.origin,
+    timestamp: new Date().toISOString() 
+  });
+});
+
 // PesaPal Routes
 app.post('/api/create-pesapal-order', async (req, res) => {
   try {
     console.log('Creating PesaPal order:', req.body);
+    console.log('Request headers:', req.headers);
     
     const { amount, currency, planId, planName, customerEmail, customerName } = req.body;
     
@@ -169,12 +205,14 @@ app.post('/api/create-pesapal-order', async (req, res) => {
     
     if (!authResponse.ok) {
       const errorText = await authResponse.text();
+      console.error('PesaPal auth failed:', errorText);
       throw new Error(`PesaPal auth failed: ${authResponse.status} - ${errorText}`);
     }
     
     const authData = await authResponse.json();
     
     if (!authData.token) {
+      console.error('No token in auth response:', authData);
       throw new Error('PesaPal did not return an access token');
     }
     
@@ -215,10 +253,12 @@ app.post('/api/create-pesapal-order', async (req, res) => {
     
     if (!orderResponse.ok) {
       const errorText = await orderResponse.text();
+      console.error('PesaPal order submission failed:', errorText);
       throw new Error(`PesaPal order submission failed: ${orderResponse.status} - ${errorText}`);
     }
     
     const orderResult = await orderResponse.json();
+    console.log('PesaPal order result:', orderResult);
     
     if (!orderResult.redirect_url) {
       throw new Error('PesaPal did not return a redirect URL');
@@ -247,7 +287,8 @@ app.post('/api/create-pesapal-order', async (req, res) => {
     console.error('PesaPal order creation error:', error);
     res.status(500).json({ 
       message: 'Failed to create PesaPal order',
-      error: error.message
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
@@ -527,5 +568,5 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`🚀 Server successfully started on port ${PORT}`);
   console.log(`📍 Server URL: http://localhost:${PORT}`);
-  console.log('✅ No errors! CORS issue fixed.');
+  console.log('✅ Enhanced CORS configuration applied');
 });
