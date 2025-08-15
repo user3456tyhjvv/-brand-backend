@@ -228,7 +228,7 @@ app.post('/api/create-pesapal-order', async (req, res) => {
       amount: parseFloat(amount),
       description: `${planName || 'Plan'} Subscription`,
       callback_url: process.env.PESAPAL_CALLBACK_URL || "https://brandifyblog.web.app/pesapal-callback",
-      notification_id: process.env.PESAPAL_NOTIFICATION_ID || "",
+      notification_id: process.env.PESAPAL_NOTIFICATION_ID || "https://brandifyblog.web.app/paypal-success",
       billing_address: {
         email_address: customerEmail,
         phone_number: "",
