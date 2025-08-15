@@ -208,7 +208,7 @@ app.post('/api/create-pesapal-order', async (req, res) => {
           'Authorization': `Bearer ${accessToken}`
         },
         body: JSON.stringify({
-          url: process.env.PESAPAL_IPN_URL || "https://brand-backend-y2fk.onrender.com/api/pesapal-ipn",
+          url: process.env.PESAPAL_IPN_URL,
           ipn_notification_type: "GET"
         })
       });
